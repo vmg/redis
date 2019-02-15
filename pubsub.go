@@ -34,9 +34,10 @@ type PubSub struct {
 
 	cmd *Cmd
 
-	chOnce sync.Once
-	ch     chan *Message
-	ping   chan struct{}
+	chOnce     sync.Once
+	ch         chan *Message
+	ping       chan struct{}
+	legacyPing bool
 }
 
 func (c *PubSub) init() {
@@ -239,11 +240,18 @@ func (c *PubSub) subscribe(redisCmd string, channels ...string) error {
 }
 
 func (c *PubSub) Ping(payload ...string) error {
-	args := []interface{}{"ping"}
-	if len(payload) == 1 {
-		args = append(args, payload[0])
+	var cmd *Cmd
+
+	if c.legacyPing {
+		const unsubPingChannel = "__goredis:unsub:ping"
+		cmd = NewCmd("unsubscribe", unsubPingChannel)
+	} else {
+		args := []interface{}{"ping"}
+		if len(payload) == 1 {
+			args = append(args, payload[0])
+		}
+		cmd = NewCmd(args...)
 	}
-	cmd := NewCmd(args...)
 
 	cn, err := c.conn()
 	if err != nil {
@@ -470,4 +478,14 @@ func (c *PubSub) initChannel() {
 
 func (c *PubSub) retryBackoff(attempt int) time.Duration {
 	return internal.RetryBackoff(attempt, c.opt.MinRetryBackoff, c.opt.MaxRetryBackoff)
+}
+
+// SetLegacyPing enables a legacy workaround for old Redis servers. Before Redis 2.8,
+// PubSub connections did _not_ support `PING`/`PONG` messages, so doing consistent keepalives
+// was not possible. When enabled, legacy ping mode works around the issue by issuing
+// `UNSUBSCRIBE` messages to a specific unused channel (with the prefix `__goredis`). The
+// answers to this unsubscribe operations act as a `PONG` to ensure the connection is still
+// healthy.
+func (c *PubSub) SetLegacyPing(legacy bool) {
+	c.legacyPing = legacy
 }
